@@ -19,3 +19,11 @@ local_output*
 *.log
 *.txt
 *.ipynb
+results/
+checkpoints/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+*.safetensors
