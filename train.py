@@ -4,6 +4,7 @@ import sys
 import time
 
 import torch
+from safetensors.torch import load_file
 from trainer import SwittiTrainer
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
@@ -80,7 +81,22 @@ def build_everything(args: arg_util.Args):
     else:
         vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
 
-    start_it = load_model_state(args, switti_wo_ddp)
+    model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
+
+    if os.path.exists(model_path):
+        start_it = load_model_state(args, switti_wo_ddp)
+    elif args.switti_ckpt is not None:
+        switti_weights_path = os.path.join(args.switti_ckpt, "model.safetensors")
+        if not os.path.exists(switti_weights_path):
+            raise FileNotFoundError(f"Switti weights not found: {switti_weights_path}")
+
+        state_dict = load_file(switti_weights_path)
+        switti_wo_ddp.load_state_dict(state_dict, strict=True)
+        start_it = 0
+        print(f"[pretrained init] loaded Switti from {switti_weights_path}")
+    else:
+        start_it = load_model_state(args, switti_wo_ddp)
+
     vae_local: VQVAE = args.compile_model(vae_local, args.vfast)
     switti_wo_ddp: Switti = args.compile_model(switti_wo_ddp, args.tfast)
     if args.use_gradient_checkpointing:
