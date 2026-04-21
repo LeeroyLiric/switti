@@ -248,8 +248,9 @@ class Switti(nn.Module):
                 B, self.first_l, -1
             )
 
+            word_dtype = self.word_embed.weight.dtype
             x_BLC = torch.cat(
-                (sos, self.word_embed(x_BLCv_wo_first_l.float())), dim=1
+                (sos, self.word_embed(x_BLCv_wo_first_l.to(dtype=word_dtype))), dim=1
             )
             x_BLC += self.lvl_embed(
                 self.lvl_1L[:, :ed].expand(B, -1)
@@ -297,8 +298,9 @@ class Switti(nn.Module):
                     crop_cond=crop_cond,
                 )
 
+        head_dtype = self.head.weight.dtype
         with torch.amp.autocast('cuda', enabled=not self.training):
-            x_BLC = self.get_logits(x_BLC, cond_BD.float())
+            x_BLC = self.get_logits(x_BLC, cond_BD.to(dtype=head_dtype))
 
         return x_BLC  # logits BLV, V is vocab_size
 
