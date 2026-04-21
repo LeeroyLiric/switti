@@ -126,6 +126,8 @@ class SwittiPipeline:
 
         B = context.shape[0] // 2
 
+        device = switti.text_pooler.weight.device
+        cond_vector = cond_vector.to(device, non_blocking=True)
         cond_vector = switti.text_pooler(cond_vector)
 
         if switti.use_crop_cond:
