@@ -154,15 +154,19 @@ def build_everything(args: arg_util.Args):
     )
 
     # FSDP wrapper
-    switti: FSDP = (FSDP if dist.initialized() else NullDDP)(
-        switti_wo_ddp,
-        auto_wrap_policy=lambda module, recurse, **_etc: recurse or isinstance(module, AdaLNSelfCrossAttn),
-        device_id=dist.get_local_rank(),
-        sharding_strategy=ShardingStrategy.HYBRID_SHARD if args.use_fsdp else ShardingStrategy.NO_SHARD, #FULL_SHARD,
-        use_orig_params=True,
-        forward_prefetch=True,
-        limit_all_gathers=True,
-    )
+    if dist.initialized() and args.use_fsdp:
+        switti = FSDP(
+            switti_wo_ddp,
+            auto_wrap_policy=lambda module, recurse, **_etc: recurse or isinstance(module, AdaLNSelfCrossAttn),
+            device_id=dist.get_local_rank(),
+            sharding_strategy=ShardingStrategy.HYBRID_SHARD,
+            use_orig_params=True,
+            forward_prefetch=True,
+            limit_all_gathers=True,
+        )
+    else:
+        switti = NullDDP(switti_wo_ddp)
+        
     # build optimizer
     names, paras, para_groups = filter_params(switti, nowd_keys={
         'pos_embed', 'pos_1LC', 'pos_start', 'start_pos', 'lvl_embed',
