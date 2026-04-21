@@ -4,7 +4,6 @@ import sys
 import time
 
 import torch
-from safetensors.torch import load_file
 from trainer import SwittiTrainer
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
@@ -14,6 +13,8 @@ import dist
 from calculate_metrics import distributed_metrics_with_csv, to_PIL_image
 from models import Switti, VQVAE, VQVAEHF, build_models
 from models.switti import SwittiHF # Необходим для правильных параметров модели
+from models.pipeline import SwittiPipeline
+from models.clip import FrozenCLIPEmbedder
 from models.basic_switti import AdaLNSelfCrossAttn
 from utils import arg_util, misc
 from utils.amp_sc import AmpOptimizer
@@ -27,11 +28,11 @@ from utils.fid_score_in_memory import calculate_fid
 DEFAULT_VAE_CKPT = "vae_ch160v4096z32.pth"
 
 def build_everything(args: arg_util.Args):
-    # create tensorboard logger
+    
+    # create tensorboard logger ...
     tb_lg: misc.TensorboardLogger
     if dist.is_master():
         os.makedirs(args.tb_log_dir_path, exist_ok=True)
-        # noinspection PyTypeChecker
         tb_lg = misc.DistLogger(
             misc.TensorboardLogger(
                 log_dir=args.tb_log_dir_path,
@@ -41,37 +42,81 @@ def build_everything(args: arg_util.Args):
         )
         tb_lg.flush()
     else:
-        # noinspection PyTypeChecker
         tb_lg = misc.DistLogger(None, verbose=False)
 
-    # log args
     print(f"initial args:\n{str(args)}")
+    
+    # log args ...
+    if args.switti_ckpt is not None:
+        # HF path: не создаём временный Switti через build_models
+        if args.vae_ckpt is None:
+            raise ValueError("For HF Switti path, vae_ckpt must be provided")
 
-    # build models
-    vae_local, switti_wo_ddp, pipe = build_models(
-        # VQVAE hyperparameters
-        V=args.vqvae_vocab_size,
-        Cvae=args.vqvae_channel_dim,
-        ch=args.vqvae_n_channels,
-        share_quant_resi=args.vqvae_share_quant_resi,
-        # train hyperparameters
-        device=dist.get_device(),
-        patch_nums=args.patch_nums,
-        depth=args.depth,
-        attn_l2_norm=args.anorm,
-        init_adaln=args.aln,
-        init_adaln_gamma=args.alng,
-        init_head=args.hd,
-        init_std=args.ini,
-        text_encoder_path=args.text_encoder_path,
-        text_encoder_2_path=args.text_encoder_2_path,
-        rope=args.rope,
-        rope_theta=args.rope_theta,
-        rope_size=args.rope_size,
-        dpr=args.drop_path_rate,
-        use_swiglu_ffn=args.use_swiglu_ffn,
-        use_crop_cond=args.use_crop_cond,
-    )
+        vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
+        switti_wo_ddp = SwittiHF.from_pretrained(args.switti_ckpt).to(dist.get_device())
+
+        args.depth = switti_wo_ddp.depth
+        args.use_crop_cond = switti_wo_ddp.use_crop_cond
+        args.patch_nums = switti_wo_ddp.patch_nums
+        args.pn = "_".join(map(str, switti_wo_ddp.patch_nums))
+        args.resos = tuple(pn * args.patch_size for pn in args.patch_nums)
+        args.data_load_reso = max(args.resos)
+
+        # текстовые энкодеры держим на CPU, чтобы влезть в T4
+        text_encoder = FrozenCLIPEmbedder(args.text_encoder_path, device="cpu")
+        text_encoder_2 = FrozenCLIPEmbedder(args.text_encoder_2_path, device="cpu")
+
+        pipe = SwittiPipeline(
+            switti=switti_wo_ddp,
+            vae=vae_local,
+            text_encoder=text_encoder,
+            text_encoder_2=text_encoder_2,
+            device=dist.get_device(),
+            dtype=torch.bfloat16 if args.fp16 == 2 else (torch.float16 if args.fp16 == 1 else torch.float32),
+        )
+
+        start_it = 0
+        print(f"[pretrained init] loaded HF Switti from {args.switti_ckpt}")
+
+    else:
+        vae_local, switti_wo_ddp, pipe = build_models(
+            V=args.vqvae_vocab_size,
+            Cvae=args.vqvae_channel_dim,
+            ch=args.vqvae_n_channels,
+            share_quant_resi=args.vqvae_share_quant_resi,
+            device=dist.get_device(),
+            patch_nums=args.patch_nums,
+            depth=args.depth,
+            attn_l2_norm=args.anorm,
+            init_adaln=args.aln,
+            init_adaln_gamma=args.alng,
+            init_head=args.hd,
+            init_std=args.ini,
+            text_encoder_path=args.text_encoder_path,
+            text_encoder_2_path=args.text_encoder_2_path,
+            rope=args.rope,
+            rope_theta=args.rope_theta,
+            rope_size=args.rope_size,
+            dpr=args.drop_path_rate,
+            use_swiglu_ffn=args.use_swiglu_ffn,
+            use_crop_cond=args.use_crop_cond,
+        )
+
+        if args.vae_ckpt is None:
+            args.vae_ckpt = DEFAULT_VAE_CKPT
+            if not os.path.exists(DEFAULT_VAE_CKPT) and dist.is_local_master():
+                os.system(f'wget https://huggingface.co/FoundationVision/var/resolve/main/{DEFAULT_VAE_CKPT}')
+            dist.barrier()
+            vae_local.load_state_dict(torch.load(args.vae_ckpt, map_location="cpu"), strict=True)
+        else:
+            vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
+
+        model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
+        if os.path.exists(model_path):
+            start_it = load_model_state(args, switti_wo_ddp)
+        else:
+            start_it = 0
+
     
     # Держим frozen text encoders на CPU, иначе 2x CLIP + SwittiHF не влезают в T4
     pipe.text_encoder = pipe.text_encoder.to("cpu")
@@ -82,42 +127,6 @@ def build_everything(args: arg_util.Args):
 
     gc.collect()
     torch.cuda.empty_cache()
-
-    # Load VAE and Switti checkpoints
-    if args.vae_ckpt is None:
-        args.vae_ckpt = DEFAULT_VAE_CKPT
-        if not os.path.exists(DEFAULT_VAE_CKPT) and dist.is_local_master():
-            os.system(f'wget https://huggingface.co/FoundationVision/var/resolve/main/{DEFAULT_VAE_CKPT}')
-        dist.barrier()
-        vae_local.load_state_dict(torch.load(args.vae_ckpt, map_location="cpu"), strict=True)
-    else:
-        del vae_local
-        gc.collect()
-        torch.cuda.empty_cache()
-        vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
-
-    model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
-
-    if os.path.exists(model_path):
-        start_it = load_model_state(args, switti_wo_ddp)
-    elif args.switti_ckpt is not None:
-        del switti_wo_ddp
-        gc.collect()
-        torch.cuda.empty_cache()
-        
-        switti_wo_ddp = SwittiHF.from_pretrained(args.switti_ckpt).to(dist.get_device())
-
-        args.depth = switti_wo_ddp.depth
-        args.use_crop_cond = switti_wo_ddp.use_crop_cond
-        args.patch_nums = switti_wo_ddp.patch_nums
-        args.pn = "_".join(map(str, switti_wo_ddp.patch_nums))
-        args.resos = tuple(pn * args.patch_size for pn in args.patch_nums)
-        args.data_load_reso = max(args.resos)
-
-        start_it = 0
-        print(f"[pretrained init] loaded HF Switti from {args.switti_ckpt}")
-    else:
-        start_it = load_model_state(args, switti_wo_ddp)    
 
     vae_local: VQVAE = args.compile_model(vae_local, args.vfast)
     switti_wo_ddp: Switti = args.compile_model(switti_wo_ddp, args.tfast)
