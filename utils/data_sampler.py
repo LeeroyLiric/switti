@@ -77,6 +77,10 @@ class DistInfiniteBatchSampler(InfiniteBatchSampler):
         start_ep=0,
         start_it=0,
     ):
+        if world_size <= 0:
+            raise ValueError(f"world_size must be positive, got {world_size}")
+        if glb_batch_size <= 0:
+            raise ValueError(f"glb_batch_size must be positive, got {glb_batch_size}")
         assert glb_batch_size % world_size == 0
         self.world_size, self.rank = world_size, rank
         self.dataset_len = dataset_len

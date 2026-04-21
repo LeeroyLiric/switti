@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import random
 import subprocess
@@ -371,7 +372,15 @@ def init_dist_and_get_args():
     args.data_load_reso = max(args.resos)
 
     # update args: bs and lr
-    bs_per_gpu = round(args.bs / dist.get_world_size())
+    if args.bs <= 0:
+        raise ValueError(f"--bs must be positive, got {args.bs}")
+    bs_per_gpu = max(1, math.ceil(args.bs / dist.get_world_size()))
+    if bs_per_gpu * dist.get_world_size() != args.bs and dist.is_master():
+        print(
+            f"[args] requested global bs={args.bs} is not divisible by world_size={dist.get_world_size()}; "
+            f"using local bs={bs_per_gpu}, effective global bs={bs_per_gpu * dist.get_world_size()}",
+            flush=True,
+        )
     args.batch_size = bs_per_gpu
     args.bs = args.glb_batch_size = args.batch_size * dist.get_world_size()
     args.workers = min(max(0, args.workers), args.batch_size)
