@@ -72,6 +72,17 @@ def build_everything(args: arg_util.Args):
         use_swiglu_ffn=args.use_swiglu_ffn,
         use_crop_cond=args.use_crop_cond,
     )
+    
+    # Держим frozen text encoders на CPU, иначе 2x CLIP + SwittiHF не влезают в T4
+    pipe.text_encoder = pipe.text_encoder.to("cpu")
+    pipe.text_encoder.device = "cpu"
+
+    pipe.text_encoder_2 = pipe.text_encoder_2.to("cpu")
+    pipe.text_encoder_2.device = "cpu"
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # Load VAE and Switti checkpoints
     if args.vae_ckpt is None:
         args.vae_ckpt = DEFAULT_VAE_CKPT
@@ -80,6 +91,9 @@ def build_everything(args: arg_util.Args):
         dist.barrier()
         vae_local.load_state_dict(torch.load(args.vae_ckpt, map_location="cpu"), strict=True)
     else:
+        del vae_local
+        gc.collect()
+        torch.cuda.empty_cache()
         vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
 
     model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
@@ -87,6 +101,10 @@ def build_everything(args: arg_util.Args):
     if os.path.exists(model_path):
         start_it = load_model_state(args, switti_wo_ddp)
     elif args.switti_ckpt is not None:
+        del switti_wo_ddp
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         switti_wo_ddp = SwittiHF.from_pretrained(args.switti_ckpt).to(dist.get_device())
 
         args.depth = switti_wo_ddp.depth

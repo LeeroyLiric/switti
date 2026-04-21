@@ -128,6 +128,10 @@ class SwittiTrainer(object):
              prompt_attn_bias,
              ) = self.pipe.encode_prompt(prompt, encode_null=False)
 
+            prompt_embeds = prompt_embeds.to(self.device, non_blocking=True)
+            pooled_prompt_embeds = pooled_prompt_embeds.to(self.device, non_blocking=True)
+            prompt_attn_bias = prompt_attn_bias.to(self.device, non_blocking=True)
+
             with self.optimizer.amp_ctx:
                 logits_BLV = self.switti(
                     x_BLCv_wo_first_l,
