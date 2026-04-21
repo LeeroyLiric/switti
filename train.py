@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 import dist
 from calculate_metrics import distributed_metrics_with_csv, to_PIL_image
 from models import Switti, VQVAE, VQVAEHF, build_models
+from models.switti import SwittiHF # Необходим для правильных параметров модели
 from models.basic_switti import AdaLNSelfCrossAttn
 from utils import arg_util, misc
 from utils.amp_sc import AmpOptimizer
@@ -86,19 +87,26 @@ def build_everything(args: arg_util.Args):
     if os.path.exists(model_path):
         start_it = load_model_state(args, switti_wo_ddp)
     elif args.switti_ckpt is not None:
-        switti_weights_path = os.path.join(args.switti_ckpt, "model.safetensors")
-        if not os.path.exists(switti_weights_path):
-            raise FileNotFoundError(f"Switti weights not found: {switti_weights_path}")
+        switti_wo_ddp = SwittiHF.from_pretrained(args.switti_ckpt).to(dist.get_device())
 
-        state_dict = load_file(switti_weights_path)
-        switti_wo_ddp.load_state_dict(state_dict, strict=True)
+        args.depth = switti_wo_ddp.depth
+        args.use_crop_cond = switti_wo_ddp.use_crop_cond
+        args.patch_nums = switti_wo_ddp.patch_nums
+        args.pn = "_".join(map(str, switti_wo_ddp.patch_nums))
+        args.resos = tuple(pn * args.patch_size for pn in args.patch_nums)
+        args.data_load_reso = max(args.resos)
+
         start_it = 0
-        print(f"[pretrained init] loaded Switti from {switti_weights_path}")
+        print(f"[pretrained init] loaded HF Switti from {args.switti_ckpt}")
     else:
-        start_it = load_model_state(args, switti_wo_ddp)
+        start_it = load_model_state(args, switti_wo_ddp)    
 
     vae_local: VQVAE = args.compile_model(vae_local, args.vfast)
     switti_wo_ddp: Switti = args.compile_model(switti_wo_ddp, args.tfast)
+
+    pipe.vae = vae_local
+    pipe.switti = switti_wo_ddp
+
     if args.use_gradient_checkpointing:
         switti_wo_ddp.enable_gradient_checkpointing()
 
