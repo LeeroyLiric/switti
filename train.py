@@ -52,7 +52,7 @@ def build_everything(args: arg_util.Args):
         if args.vae_ckpt is None:
             raise ValueError("For HF Switti path, vae_ckpt must be provided")
 
-        vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
+        vae_local = VQVAEHF.from_pretrained(args.vae_ckpt, reso=512).to(dist.get_device())
         switti_wo_ddp = SwittiHF.from_pretrained(args.switti_ckpt).to(dist.get_device())
 
         args.depth = switti_wo_ddp.depth
@@ -109,7 +109,7 @@ def build_everything(args: arg_util.Args):
             dist.barrier()
             vae_local.load_state_dict(torch.load(args.vae_ckpt, map_location="cpu"), strict=True)
         else:
-            vae_local = VQVAEHF.from_pretrained(args.vae_ckpt).to(dist.get_device())
+            vae_local = VQVAEHF.from_pretrained(args.vae_ckpt, reso=512).to(dist.get_device())
 
         model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
         if os.path.exists(model_path):
