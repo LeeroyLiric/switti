@@ -109,6 +109,10 @@ class SwittiTrainer(object):
                 inp_B3HW, size=(self.resos[-1], self.resos[-1]), mode="bicubic",
             )
 
+            # Привожу к bf16 типу данных
+            vae_dtype = next(self.vae_local.parameters()).dtype
+            inp_B3HW = inp_B3HW.to(dtype=vae_dtype)
+
             B, V = inp_B3HW.size(0), self.vae_local.vocab_size
 
             gt_idx_Bl: List[ITen] = self.vae_local.img_to_idxBl(
