@@ -137,11 +137,15 @@ class SwittiTrainer(object):
             prompt_attn_bias = prompt_attn_bias.to(self.device, non_blocking=True)
 
             with self.optimizer.amp_ctx:
+                batch_height = [self.resos[-1]] * B
+                batch_width = [self.resos[-1]] * B
                 logits_BLV = self.switti(
                     x_BLCv_wo_first_l,
                     prompt_embeds=prompt_embeds,
                     pooled_prompt_embeds=pooled_prompt_embeds,
                     prompt_attn_bias=prompt_attn_bias,
+                    batch_height=batch_height,
+                    batch_width=batch_width,
                 )
                 loss = self.train_loss(logits_BLV.view(-1, V),
                                        gt_BL.view(-1),
@@ -167,6 +171,8 @@ class SwittiTrainer(object):
                     prompt_embeds=prompt_embeds,
                     pooled_prompt_embeds=pooled_prompt_embeds,
                     prompt_attn_bias=prompt_attn_bias,
+                    batch_height=batch_height,
+                    batch_width=batch_width,
                 )
 
             # Compute cluster usage
