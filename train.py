@@ -267,61 +267,62 @@ def main_training():
 
         if cur_iter % args.save_iters == 0 and cur_iter > start_it:
             save_model_state(cur_iter, args, trainer.switti)
-            # Calculate metrics
-            trainer.pipe.switti.eval()
-            for eval_set_name in ['coco', 'mjhq']:
-                if eval_set_name == "coco":
-                    eval_prompts_path = 'eval_prompts/coco.csv'
-                    fid_stats_path = args.coco_ref_stats_path
-                else:
-                    eval_prompts_path = 'eval_prompts/mjhq.csv'
-                    fid_stats_path = args.mjhq_ref_stats_path
+            # Calculate metrics only when explicitly enabled.
+            if args.metrics_max_count > 0:
+                trainer.pipe.switti.eval()
+                for eval_set_name in ['coco', 'mjhq']:
+                    if eval_set_name == "coco":
+                        eval_prompts_path = 'eval_prompts/coco.csv'
+                        fid_stats_path = args.coco_ref_stats_path
+                    else:
+                        eval_prompts_path = 'eval_prompts/mjhq.csv'
+                        fid_stats_path = args.mjhq_ref_stats_path
 
-                with FSDP.summon_full_params(trainer.switti, writeback=False):
-                    local_images, local_pick_score, local_clip_score, local_image_reward = distributed_metrics_with_csv(
-                        trainer.pipe,
-                        eval_prompts_path,
-                        args,
-                    )
+                    with FSDP.summon_full_params(trainer.switti, writeback=False):
+                        local_images, local_pick_score, local_clip_score, local_image_reward = distributed_metrics_with_csv(
+                            trainer.pipe,
+                            eval_prompts_path,
+                            args,
+                        )
 
-                dist.allreduce(local_pick_score)
-                pick_score = local_pick_score.item() / dist.get_world_size()
+                    dist.allreduce(local_pick_score)
+                    pick_score = local_pick_score.item() / dist.get_world_size()
 
-                dist.allreduce(local_clip_score)
-                clip_score = local_clip_score.item() / dist.get_world_size()
+                    dist.allreduce(local_clip_score)
+                    clip_score = local_clip_score.item() / dist.get_world_size()
 
-                dist.allreduce(local_image_reward)
-                image_reward = local_image_reward.item() / dist.get_world_size()
+                    dist.allreduce(local_image_reward)
+                    image_reward = local_image_reward.item() / dist.get_world_size()
 
-                gathered_images = dist.allgather(local_images)
-                images = [to_PIL_image(image) for image in gathered_images]
+                    gathered_images = dist.allgather(local_images)
+                    images = [to_PIL_image(image) for image in gathered_images]
 
-                if dist.is_master():
-                    print("Evaluating FID score...")
-                    fid_score = calculate_fid(
-                        images, fid_stats_path, inception_path=args.inception_path
-                    )
+                    if dist.is_master():
+                        print("Evaluating FID score...")
+                        fid_score = calculate_fid(
+                            images, fid_stats_path, inception_path=args.inception_path
+                        )
 
-                    eval_metrics = {
-                        "CLIP score": clip_score,
-                        "FID": fid_score,
-                        "Pickscore": pick_score,
-                        "ImageReward": image_reward,
-                    }
-                    tb_lg.update(
-                        head=f"{eval_set_name}_metrics_top_k={args.top_k}_top_p={args.top_p}_cfg={args.guidance}",
-                        **eval_metrics,
-                        step=cur_iter,
-                    )
+                        eval_metrics = {
+                            "CLIP score": clip_score,
+                            "FID": fid_score,
+                            "Pickscore": pick_score,
+                            "ImageReward": image_reward,
+                        }
+                        tb_lg.update(
+                            head=f"{eval_set_name}_metrics_top_k={args.top_k}_top_p={args.top_p}_cfg={args.guidance}",
+                            **eval_metrics,
+                            step=cur_iter,
+                        )
 
-                del local_images, images, gathered_images 
-                gc.collect(), torch.cuda.empty_cache()
+                    del local_images, images, gathered_images
+                    gc.collect(), torch.cuda.empty_cache()
 
-                dist.barrier()
-                print("Finished metrics calculation...")
-                args.dump_log()
-                tb_lg.flush()
-            trainer.pipe.switti.train()
+                    dist.barrier()
+                    print("Finished metrics calculation...")
+                    args.dump_log()
+                    tb_lg.flush()
+                trainer.pipe.switti.train()
 
     gc.collect(), torch.cuda.empty_cache(), time.sleep(3)
     args.remain_time, args.finish_time = "-", time.strftime(
