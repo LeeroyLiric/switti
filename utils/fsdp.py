@@ -21,6 +21,32 @@ def bcast_state_dict(state_dict):
             Exception(f"Unsupported type: {type(data)}")
 
 
+def _save_checkpoint_pair(
+    model_state_dict,
+    metadata,
+    save_dir,
+    model_filename,
+    metadata_filename,
+    *,
+    expected_iter=None,
+    log_prefix=None,
+):
+    if expected_iter is not None and metadata.get("iter") != expected_iter:
+        raise RuntimeError(
+            f"Refusing to save checkpoint_{expected_iter}: metadata['iter']={metadata.get('iter')}"
+        )
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    torch.save(model_state_dict, os.path.join(save_dir, model_filename))
+    if log_prefix is not None:
+        print(f"{log_prefix} Saved {model_filename}")
+
+    torch.save(metadata, os.path.join(save_dir, metadata_filename))
+    if log_prefix is not None:
+        print(f"{log_prefix} Saved {metadata_filename}")
+
+
 def save_model_state(cur_iter: int, args, model: torch.nn.Module):
     """Save model, optimizer state dict and training args to be loaded via load_training_state"""
 
@@ -32,27 +58,36 @@ def save_model_state(cur_iter: int, args, model: torch.nn.Module):
     ):
         model_state_dict = model.state_dict()
         if dist.is_master():
-            os.makedirs(args.local_out_dir_path, exist_ok=True)
-            model_save_path = os.path.join(
-                args.local_out_dir_path, "model_state_dict.pt"
-            )
-            torch.save(model_state_dict, model_save_path)
-
             metadata = {"iter": cur_iter, "args": args.state_dict()}
-            metadata_save_path = os.path.join(args.local_out_dir_path, "metadata.pt")
-            torch.save(metadata, metadata_save_path)
+            _save_checkpoint_pair(
+                model_state_dict,
+                metadata,
+                args.local_out_dir_path,
+                "model_state_dict.pt",
+                "metadata.pt",
+            )
 
             # Save global checkpoints
             if cur_iter % args.global_save_iters == 0:
-                model_save_path = os.path.join(
-                    args.local_out_dir_path, f"model_{cur_iter}_state_dict.pt"
+                _save_checkpoint_pair(
+                    model_state_dict,
+                    metadata,
+                    args.local_out_dir_path,
+                    f"model_{cur_iter}_state_dict.pt",
+                    f"metadata_{cur_iter}.pt",
                 )
-                torch.save(model_state_dict, model_save_path)
 
-                metadata_save_path = os.path.join(
-                    args.local_out_dir_path, f"metadata_{cur_iter}.pt"
+            save_iter_list_set = getattr(args, "save_iter_list_set", set())
+            if cur_iter in save_iter_list_set:
+                _save_checkpoint_pair(
+                    model_state_dict,
+                    metadata,
+                    os.path.join(args.local_out_dir_path, "saved_ckpts"),
+                    f"model_state_dict_{cur_iter}.pt",
+                    f"metadata_{cur_iter}.pt",
+                    expected_iter=cur_iter,
+                    log_prefix="[Named checkpoint]",
                 )
-                torch.save(metadata, metadata_save_path)
 
             print(f"Saved model and optimizer state dicts to {args.local_out_dir_path}")
 

@@ -77,6 +77,7 @@ class Args(Tap):
     # logging args
     save_iters: int = 4000
     global_save_iters: int = 40000
+    save_iter_list: str = ""
     log_iters: int = 200
     log_images_iters: int = 1000
     uncond_proba: float = 0.1
@@ -387,6 +388,9 @@ def init_dist_and_get_args():
 
     args.tlr = args.tblr
     args.twde = args.twde or args.twd
+
+    if args.max_iters <= 1 or round(args.wp) >= args.max_iters - 1:
+        raise ValueError("Invalid warmup: wp must be smaller than max_iters - 1")
 
     tb_name = "tb_logs"
     args.tb_log_dir_path = os.path.join(args.local_out_dir_path, tb_name)

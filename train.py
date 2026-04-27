@@ -27,6 +27,32 @@ from utils.fid_score_in_memory import calculate_fid
 
 DEFAULT_VAE_CKPT = "vae_ch160v4096z32.pth"
 
+
+def parse_save_iter_list(save_iter_list: str) -> set[int]:
+    if not save_iter_list:
+        return set()
+
+    parsed = set()
+    for raw_item in save_iter_list.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+
+        try:
+            value = int(item)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid --save_iter_list value '{item}'. Expected comma-separated integers."
+            ) from exc
+
+        if value <= 0:
+            raise ValueError(
+                f"Invalid --save_iter_list value '{item}'. Iterations must be positive."
+            )
+        parsed.add(value)
+
+    return parsed
+
 def build_everything(args: arg_util.Args):
     
     # create tensorboard logger ...
@@ -75,8 +101,12 @@ def build_everything(args: arg_util.Args):
             dtype=torch.bfloat16 if args.fp16 == 2 else (torch.float16 if args.fp16 == 1 else torch.float32),
         )
 
-        start_it = 0
-        print(f"[pretrained init] loaded HF Switti from {args.switti_ckpt}")
+        model_path = os.path.join(args.local_out_dir_path, "model_state_dict.pt")
+        if os.path.exists(model_path):
+            start_it = load_model_state(args, switti_wo_ddp)
+        else:
+            start_it = 0
+            print(f"[pretrained init] loaded HF Switti from {args.switti_ckpt}")
 
     else:
         vae_local, switti_wo_ddp, pipe = build_models(
@@ -230,6 +260,18 @@ def build_everything(args: arg_util.Args):
 def main_training():
     torch.set_num_threads(32)
     args: arg_util.Args = arg_util.init_dist_and_get_args()
+    args.save_iter_list_set = parse_save_iter_list(args.save_iter_list)
+    saved_ckpts_path = os.path.join(args.local_out_dir_path, "saved_ckpts")
+    if dist.is_master():
+        print(
+            "[train setup] "
+            f"max_iters={args.max_iters}, "
+            f"save_iters={args.save_iters}, "
+            f"save_iter_list={args.save_iter_list or None}, "
+            f"wp={args.wp}, "
+            f"local_out_dir_path={args.local_out_dir_path}, "
+            f"saved_ckpts={saved_ckpts_path}"
+        )
     (tb_lg, trainer, start_it) = build_everything(args)
     dist.barrier()
 
@@ -265,10 +307,12 @@ def main_training():
             tb_lg.update(head="AR_opt_grad/grad", grad_norm=grad_norm)
             tb_lg.update(head="AR_opt_grad/grad", grad_clip=args.tclip)
 
-        if cur_iter % args.save_iters == 0 and cur_iter > start_it:
+        should_save_periodic = cur_iter % args.save_iters == 0 and cur_iter > start_it
+        should_save_named = cur_iter in args.save_iter_list_set
+        if should_save_periodic or should_save_named:
             save_model_state(cur_iter, args, trainer.switti)
             # Calculate metrics only when explicitly enabled.
-            if args.metrics_max_count > 0:
+            if should_save_periodic and args.metrics_max_count > 0:
                 trainer.pipe.switti.eval()
                 for eval_set_name in ['coco', 'mjhq']:
                     if eval_set_name == "coco":

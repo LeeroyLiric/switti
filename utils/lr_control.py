@@ -26,7 +26,10 @@ def lr_wd_annealing(
     if cur_it < wp_it:
         cur_lr = wp0 + (1 - wp0) * cur_it / wp_it
     else:
-        pasd = (cur_it - wp_it) / (max_it - 1 - wp_it)  # [0, 1]
+        decay_span = max_it - 1 - wp_it
+        if decay_span <= 0:
+            raise ValueError("Invalid warmup: wp must be smaller than max_iters - 1")
+        pasd = (cur_it - wp_it) / decay_span  # [0, 1]
         rest = 1 - pasd  # [1, 0]
         if sche_type == "cos":
             cur_lr = wpe + (1 - wpe) * (0.5 + 0.5 * math.cos(math.pi * pasd))

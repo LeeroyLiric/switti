@@ -52,6 +52,12 @@ def parse_checkpoint_number(path: Path, patterns: tuple[re.Pattern, ...]) -> int
     return None
 
 
+def load_metadata_iteration(metadata_path: Path) -> int | None:
+    metadata = torch.load(metadata_path, map_location="cpu")
+    iteration = metadata.get("iter")
+    return iteration if isinstance(iteration, int) else None
+
+
 def discover_checkpoints(checkpoint_dir: Path) -> list[dict]:
     metadata_pattern = re.compile(r"metadata_(\d+)\.pt")
     model_patterns = (
@@ -77,10 +83,14 @@ def discover_checkpoints(checkpoint_dir: Path) -> list[dict]:
 
     checkpoints = []
     for iteration in sorted(metadata_by_iter.keys() & model_by_iter.keys()):
+        metadata_path = metadata_by_iter[iteration]
+        metadata_iteration = load_metadata_iteration(metadata_path)
         checkpoints.append(
             {
-                "iteration": iteration,
-                "metadata_path": metadata_by_iter[iteration],
+                "iteration": metadata_iteration if metadata_iteration is not None else iteration,
+                "file_iteration": iteration,
+                "metadata_iteration": metadata_iteration,
+                "metadata_path": metadata_path,
                 "model_path": model_by_iter[iteration],
             }
         )
@@ -91,9 +101,14 @@ def print_checkpoints(checkpoints: list[dict]) -> None:
     print("Available checkpoints:")
     for index, checkpoint in enumerate(checkpoints, start=1):
         iteration = checkpoint["iteration"]
+        file_iteration = checkpoint["file_iteration"]
         metadata_name = checkpoint["metadata_path"].name
         model_name = checkpoint["model_path"].name
         print(f"  {index}. iter {iteration}: {metadata_name} + {model_name}")
+        if checkpoint["metadata_iteration"] != file_iteration:
+            print(
+                f"     WARNING: filename iter={file_iteration}, metadata iter={checkpoint['metadata_iteration']}"
+            )
 
 
 def choose_checkpoint(checkpoints: list[dict], requested_iteration: int | None) -> dict:
@@ -193,6 +208,11 @@ def main() -> None:
     print(f"Loading fine-tuned checkpoint: {checkpoint['model_path']}")
     metadata = load_checkpoint_into_pipeline(pipe, checkpoint)
     print(f"Loaded checkpoint metadata iter: {metadata.get('iter', 'unknown')}")
+    if metadata.get("iter") != checkpoint["file_iteration"]:
+        print(
+            "WARNING: checkpoint filename iteration does not match metadata iteration "
+            f"({checkpoint['file_iteration']} != {metadata.get('iter')})"
+        )
 
     print("Generating...")
     with torch.no_grad():
@@ -215,9 +235,10 @@ def main() -> None:
         return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_iteration = metadata.get("iter", checkpoint["iteration"])
     output_path = os.path.join(
         RESULTS_DIR,
-        f"checkpoint_{checkpoint['iteration']}_seed{seed}_{timestamp}.png",
+        f"checkpoint_{result_iteration}_seed{seed}_{timestamp}.png",
     )
     images[0].save(output_path)
     print(f"Done. Saved as {output_path}")
