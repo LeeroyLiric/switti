@@ -44,6 +44,26 @@ def ask_seed() -> int:
         return seed
 
 
+def get_prompt(prompt_arg: str | None, default_prompt: str, use_default: bool) -> str:
+    if prompt_arg is not None or use_default:
+        prompt = "" if prompt_arg is None else prompt_arg.strip()
+        if prompt == "":
+            print(f"Using default prompt: {default_prompt}")
+            return default_prompt
+        print(f"Using custom prompt: {prompt}")
+        return prompt
+
+    return ask_prompt(default_prompt)
+
+
+def get_seed(seed_arg: int | None) -> int:
+    if seed_arg is not None:
+        print(f"Using manual seed: {seed_arg}")
+        return seed_arg
+
+    return ask_seed()
+
+
 def parse_checkpoint_number(path: Path, patterns: tuple[re.Pattern, ...]) -> int | None:
     for pattern in patterns:
         match = pattern.fullmatch(path.name)
@@ -111,36 +131,48 @@ def print_checkpoints(checkpoints: list[dict]) -> None:
             )
 
 
-def choose_checkpoint(checkpoints: list[dict], requested_iteration: int | None) -> dict:
-    if requested_iteration is not None:
-        for checkpoint in checkpoints:
-            if checkpoint["iteration"] == requested_iteration:
-                print(f"Using checkpoint iteration: {requested_iteration}")
-                return checkpoint
-        available = ", ".join(str(item["iteration"]) for item in checkpoints)
-        raise ValueError(
-            f"Checkpoint {requested_iteration} not found. Available: {available}"
-        )
+def find_checkpoint(checkpoints: list[dict], choice: str | int) -> dict:
+    try:
+        value = int(str(choice).strip())
+    except ValueError as exc:
+        raise ValueError(f"Checkpoint not found: {choice}") from exc
+
+    if 1 <= value <= len(checkpoints):
+        return checkpoints[value - 1]
+
+    for checkpoint in checkpoints:
+        if checkpoint["iteration"] == value:
+            return checkpoint
+
+    available = ", ".join(str(item["iteration"]) for item in checkpoints)
+    raise ValueError(
+        f"Checkpoint not found: {choice}. "
+        f"Use list number 1-{len(checkpoints)} or iteration: {available}"
+    )
+
+
+def choose_checkpoint(checkpoints: list[dict], requested_checkpoint: str | None) -> dict:
+    if requested_checkpoint is not None:
+        checkpoint = find_checkpoint(checkpoints, requested_checkpoint)
+        print(f"Using checkpoint iteration: {checkpoint['iteration']}")
+        return checkpoint
 
     while True:
         choice = input("Select checkpoint by list number or iteration: ").strip()
         try:
-            value = int(choice)
+            int(choice)
         except ValueError:
             print("Please enter a number from the list or checkpoint iteration.")
             continue
 
-        if 1 <= value <= len(checkpoints):
-            checkpoint = checkpoints[value - 1]
-            print(f"Using checkpoint iteration: {checkpoint['iteration']}")
-            return checkpoint
+        try:
+            checkpoint = find_checkpoint(checkpoints, choice)
+        except ValueError:
+            print("Checkpoint not found. Try again.")
+            continue
 
-        for checkpoint in checkpoints:
-            if checkpoint["iteration"] == value:
-                print(f"Using checkpoint iteration: {checkpoint['iteration']}")
-                return checkpoint
-
-        print("Checkpoint not found. Try again.")
+        print(f"Using checkpoint iteration: {checkpoint['iteration']}")
+        return checkpoint
 
 
 def load_checkpoint_into_pipeline(pipe: SwittiPipeline, checkpoint: dict) -> dict:
@@ -153,13 +185,33 @@ def load_checkpoint_into_pipeline(pipe: SwittiPipeline, checkpoint: dict) -> dic
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate an image from a selected local Switti checkpoint."
+        description="Generate an image from a selected local Switti checkpoint.",
+        epilog=(
+            "Examples:\n"
+            "  python checkpoint_gen.py\n"
+            "  python checkpoint_gen.py --checkpoint 1 --seed 697\n"
+            "  python checkpoint_gen.py --checkpoint 100 --seed 697\n"
+            "  python checkpoint_gen.py --checkpoint 200 "
+            '--prompt "medieval stone wall texture, ancient masonry" --seed 850\n'
+            '  python checkpoint_gen.py --checkpoint 100 --prompt "" --seed 850'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--checkpoint_dir", default=DEFAULT_CHECKPOINT_DIR)
     parser.add_argument("--model_path", default=DEFAULT_MODEL_PATH)
-    parser.add_argument("--checkpoint", type=int, default=None)
-    parser.add_argument("--prompt", default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint list number (1, 2, ...) or iteration number (100, 200, ...).",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="Prompt text. Use an empty string to use the default prompt without input.",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="Manual generation seed.")
     parser.add_argument("--cfg", type=float, default=6.0)
     parser.add_argument("--top_k", type=int, default=400)
     parser.add_argument("--top_p", type=float, default=0.95)
@@ -185,10 +237,16 @@ def main() -> None:
         )
 
     print_checkpoints(checkpoints)
-    checkpoint = choose_checkpoint(checkpoints, args.checkpoint)
+    try:
+        checkpoint = choose_checkpoint(checkpoints, args.checkpoint)
+    except ValueError as exc:
+        raise SystemExit(f"Error: {exc}") from None
 
-    prompt = args.prompt if args.prompt is not None else ask_prompt(DEFAULT_PROMPT)
-    seed = args.seed if args.seed is not None else ask_seed()
+    use_default_prompt = (
+        args.prompt is None and args.checkpoint is not None and args.seed is not None
+    )
+    prompt = get_prompt(args.prompt, DEFAULT_PROMPT, use_default_prompt)
+    seed = get_seed(args.seed)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
